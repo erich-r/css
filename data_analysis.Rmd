@@ -1,0 +1,499 @@
+---
+title: "Data Analysis"
+author: "Erich Robbi"
+date: "2022-07-07"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+library(tidyverse)
+library(lubridate)
+library(scales)
+library(maps)
+library(sf)
+library(gridExtra)
+library(broom)
+library(stargazer)
+library(xtable)
+theme_set(theme_classic())
+```
+
+```{r}
+ccc.df <- read.csv("../crowd-counting-consortium/ccc_compiled.csv")
+ccc.df <- as_tibble(ccc.df)
+```
+
+```{r}
+attach(ccc.df)
+#remove source columns
+ccc.df <- ccc.df %>% select(-c(33:62))
+#remove online events
+ccc.df <- ccc.df %>% filter(online == 0)
+#using lubridate for easy management of dates
+ccc.df <- ccc.df %>% filter(!is.na(date)) %>% mutate(lubri.date = ymd(date))
+#Protests between May 2021 and July 2022
+#ccc.df <- ccc.df %>% filter((month(lubri.date) >= 5 & year(lubri.date) >= 2021 |  (month(lubri.date) <= 7 & year(lubri.date) >= 2022)))
+#ccc.df <- ccc.df %>% filter(!(lubri.date %within% interval(ymd("2022-07-22"), ymd("2022-12-31"))))
+
+ccc.df <- ccc.df %>% filter((lubri.date %within% interval(ymd("2021-05-01"), ymd("2022-07-20"))))
+
+red.states <- c("AK","MT","ID","WY","UT","ND","SD","NE","IA","MO","KS","OK","AR","LA","TX","MS","AL","FL","TN","SC","NC","KY","IN","OH","WV")
+post.leak.interval <- interval(ymd("2022-05-02"), ymd("2022-07-31"))
+
+ccc.df <- ccc.df %>% mutate(red.state = ifelse(state %in% red.states,"yes","no"))
+```
+
+```{r}
+protests.issues <- paste((ccc.df)$issues,sep = "; ",collapse = "; ")
+protests.issues <- str_split(protests.issues,"; ")
+protests.issues <- protests.issues[[1]]
+protests.issues <- as_tibble(protests.issues)
+
+number.protests.per.issue <- protests.issues %>%  group_by(value) %>% summarise(number = n())
+
+number.protests.per.issue <- number.protests.per.issue %>%  arrange(desc(number.protests.per.issue$number))
+
+pre.issue.leak.count <- function(element){
+  issueToCheck <- element
+
+  n <- ccc.df %>% filter(str_detect(issues,issueToCheck) & !(lubri.date %within% post.leak.interval)) %>% count()
+  return(n)
+}
+
+post.issue.leak.count <- function(element){
+  issueToCheck <- element
+
+  n <- ccc.df %>% filter(str_detect(issues,issueToCheck) & (lubri.date %within% post.leak.interval)) %>% count()
+  return(n)
+}
+
+pre.issue.count <- number.protests.per.issue$value %>% map_df(pre.issue.leak.count)
+post.issue.count <- number.protests.per.issue$value %>% map_df(post.issue.leak.count)
+colnames(pre.issue.count) <- "Pre leak"
+colnames(post.issue.count) <- "Post leak"
+
+number.protests.per.issue <- cbind(number.protests.per.issue,pre.issue.count,post.issue.count)
+head(number.protests.per.issue,10)
+xtable(head(number.protests.per.issue,10))
+number.protests.per.issue
+```
+Most common protests:
+- Labor
+- Racism
+- Healthcare
+- Roe v Wade (reproductive rights, women's rights, some of judiciary)
+- Education
+- Covid
+
+New column for the dataframe will have values:
+- Labor
+- Racism 
+- Healthcare
+- Roe v Wade
+- Education
+- Other
+
+```{r}
+ccc.df$protest.subject <- ifelse(str_detect(ccc.df$issues,"women's rights") | str_detect(ccc.df$issues,"reproductive rights") ,"Reproductive Rights",ifelse(str_detect(ccc.df$issues,"labor"),"Labor",ifelse(str_detect(ccc.df$issues,"racism"),"Racism",ifelse(str_detect(ccc.df$issues,"healthcare"),"Healthcare", ifelse(str_detect(ccc.df$issues,"education"),"Education","Other")))))
+```
+
+```{r}
+protest.type.number.per.date <- ccc.df %>% group_by(protest.subject,lubri.date) %>% summarise(number = n())
+
+protest.type.number.per.date$number
+# Allow Default X Axis Labels
+protes.events.by.type.plot <- ggplot(protest.type.number.per.date %>% filter(protest.subject != "Other"), aes(x=lubri.date,colour=protest.subject)) + 
+    geom_line(aes(y=number)) + 
+    labs(subtitle = "May 2021 - July 2022",
+         y="N. of Protests", x = "Date") +scale_x_date(date_breaks = "1 month", 
+                 labels=date_format("%b"),
+                 limits = as.Date(c('2021-05-01','2022-07-31'))) + guides(color=guide_legend(title="Protest Subject"))+ theme_minimal() + theme(legend.position="bottom")
+
+ggsave("plots/n_protests_event_by_type_on_date.pdf",protes.events.by.type.plot)
+
+protes.events.by.type.plot
+```
+```{r}
+protes.events.by.type.augmented.plot <- ggplot(protest.type.number.per.date %>% filter(protest.subject != "Other"), aes(x=lubri.date,colour=protest.subject)) + 
+    geom_line(aes(y=number)) + 
+    labs(  subtitle = "May 2022 - July 2022",
+         y="N. of Protests",x="Date") +scale_x_date(date_breaks = "1 month", 
+                 labels=date_format("%b"),
+                 limits = as.Date(c('2022-05-01','2022-07-31')))+ylim(c(0,650)) + guides(color=guide_legend(title="Protest Subject"))+ theme_minimal() + theme(legend.position="bottom")
+
+ggsave("plots/n_protests_event_by_type_on_date_augmented.pdf",protes.events.by.type.augmented.plot)
+
+protes.events.by.type.augmented.plot
+```
+
+
+```{r}
+theme_set(theme_void())
+us.map.data <- st_as_sf(maps::map("state", plot = FALSE, fill = TRUE))
+
+reproductive.rights.protests <- ccc.df %>% filter(protest.subject == "Reproductive Rights")
+post.leak.protests <- reproductive.rights.protests %>% filter((lubri.date %within% post.leak.interval) & (lat > 25 & lat < 50))
+
+post.leak.map <- ggplot() + geom_sf(data=us.map.data) + geom_point(data = post.leak.protests, aes(x = lon, y = lat), size = 1, 
+        shape = 23, fill = "darkred")+  labs(title="Post leak",y="",x="") + theme(axis.text.x=element_blank(), axis.ticks.x=element_blank(), axis.text.y=element_blank(),  axis.ticks.y=element_blank() ,plot.title = element_text(hjust = 0.5))
+pre.leak.protests <- reproductive.rights.protests %>% filter(!(lubri.date %within% post.leak.interval) & (lat > 25 & lat < 50))
+pre.leak.map <- ggplot() + geom_sf(data=us.map.data) + geom_point(data = pre.leak.protests, aes(x = lon, y = lat), size = 1, 
+        shape = 23, fill = "darkred")+  labs(title="Pre leak",y="",x="") + theme(axis.text.x=element_blank(), axis.ticks.x=element_blank(), axis.text.y=element_blank(),  axis.ticks.y=element_blank() ,plot.title = element_text(hjust = 0.5))
+grid.arrange(pre.leak.map,post.leak.map,ncol=2)
+
+ggsave("plots/rr_protests_usa_pre_leak.pdf",pre.leak.map)
+ggsave("plots/rr_protests_usa_post_leak.pdf",post.leak.map)
+```
+```{r}
+get.df.filtered.by.date <- function(chosen.day,chosen.month,chosen.year){
+  return(reproductive.rights.protests %>% filter((day(lubri.date) == chosen.day & month(lubri.date) == chosen.month & year(lubri.date) == chosen.year) &  lat > 25 & lat < 50))
+}
+```
+
+```{r}
+dataframe.of.day <- get.df.filtered.by.date(2,5,2022)
+rr.protests.may.2022.1 <- ggplot() + geom_sf(data=us.map.data) + geom_point(data = dataframe.of.day, aes(x = lon, y = lat), size = 1, shape = 23, fill = "darkred") +  labs(title="2nd May 2022",y="",x="") + theme(axis.text.x=element_blank(), axis.ticks.x=element_blank(), axis.text.y=element_blank(),  axis.ticks.y=element_blank(),plot.title = element_text(hjust = 0.5))
+
+dataframe.of.day <- get.df.filtered.by.date(3,5,2022)
+rr.protests.may.2022.2 <- ggplot() + geom_sf(data=us.map.data) + geom_point(data = dataframe.of.day, aes(x = lon, y = lat), size = 1, shape = 23, fill = "darkred") +  labs(title="3rd May 2022",y="",x="")+ theme(axis.text.x=element_blank(), axis.ticks.x=element_blank(), axis.text.y=element_blank(),  axis.ticks.y=element_blank() ,plot.title = element_text(hjust = 0.5))
+
+dataframe.of.day <- get.df.filtered.by.date(4,5,2022)
+rr.protests.may.2022.3 <- ggplot() + geom_sf(data=us.map.data) + geom_point(data = dataframe.of.day, aes(x = lon, y = lat), size = 1, shape = 23, fill = "darkred")+  labs(title="4th May 2022",y="",x="")+ theme(axis.text.x=element_blank(), axis.ticks.x=element_blank(), axis.text.y=element_blank(),  axis.ticks.y=element_blank(),plot.title = element_text(hjust = 0.5))
+
+dataframe.of.day <- get.df.filtered.by.date(14,5,2022)
+rr.protests.may.2022.4 <- ggplot() + geom_sf(data=us.map.data) + geom_point(data = dataframe.of.day, aes(x = lon, y = lat), size = 1, shape = 23, fill = "darkred")+  labs(title="14th May 2022",y="",x="") + theme(axis.text.x=element_blank(), axis.ticks.x=element_blank(), axis.text.y=element_blank(),  axis.ticks.y=element_blank() ,plot.title = element_text(hjust = 0.5))
+
+dataframe.of.day <- get.df.filtered.by.date(24,6,2022)
+rr.protests.jun.2022.1 <- ggplot() + geom_sf(data=us.map.data) + geom_point(data = dataframe.of.day, aes(x = lon, y = lat), size = 1, shape = 23, fill = "darkred")+  labs(title="24th Jun 2022",y="",x="") + theme(axis.text.x=element_blank(), axis.ticks.x=element_blank(), axis.text.y=element_blank(),  axis.ticks.y=element_blank() ,plot.title = element_text(hjust = 0.5))
+
+dataframe.of.day <- get.df.filtered.by.date(25,6,2022)
+rr.protests.jun.2022.2 <- ggplot() + geom_sf(data=us.map.data) + geom_point(data = dataframe.of.day, aes(x = lon, y = lat), size = 1, shape = 23, fill = "darkred")+ labs(title="25th Jun 2022",y="",x="") + theme(axis.text.x=element_blank(), axis.ticks.x=element_blank(), axis.text.y=element_blank(),  axis.ticks.y=element_blank(),plot.title = element_text(hjust = 0.5))
+
+dataframe.of.day <- get.df.filtered.by.date(26,6,2022)
+rr.protests.jun.2022.3 <- ggplot() + geom_sf(data=us.map.data) + geom_point(data = dataframe.of.day, aes(x = lon, y = lat), size = 1, shape = 23, fill = "darkred")+  labs(title="26th Jun 2022",y="",x="")+ theme(axis.text.x=element_blank(), axis.ticks.x=element_blank(), axis.text.y=element_blank(),  axis.ticks.y=element_blank() ,plot.title = element_text(hjust = 0.5))
+
+dataframe.of.day <- get.df.filtered.by.date(27,6,2022)
+rr.protests.jun.2022.4 <- ggplot() + 
+  geom_sf(data=us.map.data) +
+  geom_point(data = dataframe.of.day, aes(x = lon, y = lat), size = 1, shape = 23, fill = "darkred")+ 
+  labs(title="27th Jun 2022",y="",x="") + 
+  theme(axis.text.x=element_blank(), axis.ticks.x=element_blank(), axis.text.y=element_blank(),  axis.ticks.y=element_blank() ,plot.title = element_text(hjust = 0.5))
+
+grid.arrange(rr.protests.may.2022.1,
+             rr.protests.jun.2022.1,
+             rr.protests.may.2022.2,
+             rr.protests.jun.2022.2,
+             rr.protests.may.2022.3,
+             rr.protests.jun.2022.3,
+             rr.protests.may.2022.4,
+             rr.protests.jun.2022.4,ncol=2)
+
+ggsave("plots/protests_usa_2_may.pdf",rr.protests.may.2022.1)
+ggsave("plots/protests_usa_3_may.pdf",rr.protests.may.2022.2)
+ggsave("plots/protests_usa_4_may.pdf",rr.protests.may.2022.3)
+ggsave("plots/protests_usa_14_may.pdf",rr.protests.may.2022.4)
+ggsave("plots/protests_usa_23_jun.pdf",rr.protests.jun.2022.1)
+ggsave("plots/protests_usa_24_jun.pdf",rr.protests.jun.2022.2)
+ggsave("plots/protests_usa_25_jun.pdf",rr.protests.jun.2022.3)
+ggsave("plots/protests_usa_26_jun.pdf",rr.protests.jun.2022.4)
+```
+
+```{r}
+n.protests.by.date <- ccc.df %>% group_by(lubri.date) %>% summarise(n.protest = n()) %>%  mutate(post.leak = ifelse(lubri.date %within% post.leak.interval ,"YES","NO"))
+#n.protests.by.date <- n.protests.by.date %>% filter(!(lubri.date %within% interval(ymd("2022-07-01"), ymd("2022-12-31"))))
+n.protests.pre.leak <- n.protests.by.date %>% filter(post.leak == "NO")
+n.protests.post.leak <- n.protests.by.date %>% filter(post.leak == "YES")
+n.protests.pre.leak
+n.protests.by.date
+
+```
+```{r}
+
+ks.test(n.protests.post.leak$n.protest,n.protests.pre.leak$n.protest,alternative="l")
+
+ks.test(n.protests.pre.leak$n.protest,"pnorm",mean(n.protests.pre.leak$n.protest),sd(n.protests.pre.leak$n.protest))
+ks.test(n.protests.post.leak$n.protest,"pnorm",mean(n.protests.post.leak$n.protest),sd(n.protests.post.leak$n.protest))
+```
+```{r}
+n.protests.post.leak$log.n.protest <- log(n.protests.post.leak$n.protest+1)
+n.protests.pre.leak$log.n.protest <- log(n.protests.pre.leak$n.protest+1)
+
+hist(n.protests.post.leak$log.n.protest )
+hist(n.protests.pre.leak$log.n.protest )
+
+boxplot(n.protests.post.leak$log.n.protest)
+```
+
+
+```{r}
+ks.test(n.protests.pre.leak$log.n.protest,"pnorm",mean(n.protests.pre.leak$log.n.protest),sd(n.protests.pre.leak$log.n.protest))
+
+ks.test(n.protests.post.leak$log.n.protest,"pnorm",mean(n.protests.post.leak$log.n.protest),sd(n.protests.post.leak$log.n.protest))
+
+t.test(n.protests.post.leak$log.n.protest,n.protests.pre.leak$log.n.protest,alternative="g")
+
+```
+
+```{r}
+
+post.leak.protests$participant_measures
+post.leak.protests <- post.leak.protests %>% mutate(armed_protest = ifelse(is.na(str_extract(post.leak.protests$participant_measures,"(?i)firearm|gun|pistol|armed|weapon|handgun|rifle|revolver|shotgun|arm|knife|blade| ar |ar-|firearms|taser|tasers")),0,1))
+
+armed.protests <- post.leak.protests %>% filter(armed_protest == 1)
+
+armed.protests$valence <- as_factor(armed.protests$valence)
+
+armed.protests.plot <- ggplot() + geom_histogram(aes(y=-(armed_protest),x=lubri.date,fill=valence),stat="identity",data=armed.protests %>% filter(valence==1)) + geom_histogram(aes(y=armed_protest,x=lubri.date,fill=valence),stat="identity",data=armed.protests %>% filter(valence==2)) + scale_fill_manual(values=c("#5296dd", "#e9141e"), 
+                       name="Political valence of the event",
+                       labels=c("Pro-Abortion (Left)","Anti-Abortion (Right)")) + theme_gray()+ scale_y_continuous(labels= c(4,3,2,1,0,1,2,3),breaks = c(-4,-3,-2,-1,0,1,2,3)) + labs(x="Date of event",y="Number of armed protests") + geom_vline(xintercept = ymd("2022-06-24"),col="black",linetype="dashed") +  theme(legend.position="bottom")
+
+ggsave("plots/armed_protests.pdf",armed.protests.plot)
+
+armed.protests.plot
+# 2 = pro-trump, against abortion
+# 1 = anti-trump, pro abortion
+```
+
+```{r}
+# 2 = pro-trump, against abortion
+# 1 = anti-trump, pro abortion
+issues.list <- paste((post.leak.protests %>% filter(protest.subject == "Reproductive Rights"))$issues,sep = "; ",collapse = "; ")
+issues.list <- str_split(issues.list,"; ")
+issues.list <- issues.list[[1]]
+issues.list <- as_tibble(issues.list)
+
+protests.count.by.valence <- issues.list %>%  group_by(value) %>% summarise(n = n())
+
+protests.count.by.valence$value <- factor(protests.count.by.valence$value, levels = protests.count.by.valence$value) 
+
+protests.count.by.valence <- arrange(protests.count.by.valence,desc(n))
+
+post.leak.protests.n.rows <- dim(post.leak.protests %>% filter(protest.subject == "Reproductive Rights"))[1]
+
+protests.count.by.valence$n <- (protests.count.by.valence$n / post.leak.protests.n.rows) * 100
+
+protest.by.valence.to.plot.barchart <- protests.count.by.valence[c(2:21),]
+issues.frequency.plot <- ggplot(data=protest.by.valence.to.plot.barchart, aes( x=reorder(value,n),y=n)) + 
+    geom_bar(stat="identity")+ labs(x="Issue",y="Presence")+ scale_y_continuous(breaks=c(0,20,40,60,80),labels=c("0%","20%","40%","60%","80%"))+ coord_flip() + theme_minimal() 
+
+ggsave("plots/issue_frequency.pdf",issues.frequency.plot)
+
+
+issues.frequency.plot
+
+```
+DID
+
+Since the overturn was primarily intended to effect red states, we utilize blue states as the control. 
+
+```{r}
+protest.number.per.date.by.state.type <- ccc.df %>% filter(!(year(lubri.date) == 2022 & month(lubri.date) == 3 & str_detect(claims,"Don't Say Gay"))) %>%  group_by(red.state,lubri.date) %>% summarise(number = n())
+protes.events.by.state.type.plot <- ggplot(protest.number.per.date.by.state.type, aes(x=lubri.date,colour=red.state)) + 
+    geom_line(aes(y=number)) + 
+    labs(  subtitle = "April 2022 - July 2022",
+         y="N. of Protests",x="Date") +scale_x_date(date_breaks = "1 month", 
+                 labels=date_format("%b"),
+                 limits = as.Date(c('2022-04-01','2022-07-31')))+ylim(c(0,415)) + guides(color=guide_legend(title=""))+ theme_minimal() +scale_colour_manual(values=c("#5296dd", "#e9141e"),labels=c("Blue state","Red state"))+ theme(legend.position="bottom")
+
+ggsave("plots/n_protests_event_by_state_type_on_date_augmented.pdf",protes.events.by.state.type.plot)
+
+protes.events.by.state.type.plot
+```
+```{r}
+mean.rs <- mean((protest.number.per.date.by.state.type %>% filter(red.state == "yes"))$number)
+mean.bs <- mean((protest.number.per.date.by.state.type %>% filter(red.state == "no"))$number)
+
+sd.rs <- sd((protest.number.per.date.by.state.type %>% filter(red.state == "yes"))$number)
+sd.bs <- sd((protest.number.per.date.by.state.type %>% filter(red.state == "no"))$number)
+
+standardize <- function(x){
+  red_state <- x["red.state"]
+  mean.to.subtract <- mean.rs
+  sd.to.divide <- sd.rs
+  if(red_state == "no"){
+    mean.to.subtract <- mean.bs
+    sd.to.divide <- sd.bs
+   }
+  return( (as.numeric(x["number"])- mean.to.subtract)/sd.to.divide)
+}
+protest.number.per.date.by.state.type$standardized.number <- apply(protest.number.per.date.by.state.type,MARGIN=1,FUN=standardize)
+
+protes.events.by.state.type.standardized.plot <- ggplot(protest.number.per.date.by.state.type, aes(x=lubri.date,colour=red.state)) + 
+    geom_line(aes(y=standardized.number)) + 
+    labs(  subtitle = "May 2021 - May 2022",
+         y="z score",x="Date") +scale_x_date(date_breaks = "1 month", 
+                 labels=date_format("%b"),
+                 limits = as.Date(c('2021-05-01','2022-05-02')))+ylim(c(-5,14)) + guides(color=guide_legend(title=""))+ theme_minimal() +scale_colour_manual(values=c("#5296dd", "#e9141e"),labels=c("Blue state","Red state"))+ theme(legend.position="bottom")
+
+ggsave("plots/n_protests_event_by_state_type_on_date_standardized.pdf",protes.events.by.state.type.standardized.plot)
+
+protes.events.by.state.type.standardized.plot
+
+```
+
+```{r}
+protes.events.by.state.type.standardized.augmented.plot <- ggplot(protest.number.per.date.by.state.type, aes(x=lubri.date,colour=red.state)) + 
+    geom_line(aes(y=standardized.number)) + 
+    labs(  subtitle = "February 2022 - May 2022",
+         y="z score",x="Date") +scale_x_date(date_breaks = "1 month", 
+                 labels=date_format("%b"),
+                 limits = as.Date(c('2022-02-01','2022-05-02')))+ylim(c(-1,3)) + guides(color=guide_legend(title=""))+ theme_minimal() +scale_colour_manual(values=c("#5296dd", "#e9141e"),labels=c("Blue state","Red state"))+ theme(legend.position="bottom")
+
+ggsave("plots/n_protests_event_by_state_type_on_date_augmented_standardized.pdf",protes.events.by.state.type.standardized.augmented.plot)
+
+protes.events.by.state.type.standardized.augmented.plot
+```
+
+
+
+
+```{r}
+cor.test((protest.number.per.date.by.state.type %>% filter(red.state=="no"))$number,(protest.number.per.date.by.state.type %>% filter(red.state=="yes"))$number,method = c("spearman"),alternative = "greater")
+
+```
+
+
+
+```{r}
+did.data <- ccc.df 
+
+did.data <- did.data %>% filter(!(year(lubri.date) == 2022 & month(lubri.date) == 3 & str_detect(claims,"Don't Say Gay")))
+
+did.data <- did.data %>%  mutate(post.leak = ifelse(lubri.date %within% post.leak.interval ,"yes","no"))
+
+
+
+did.data <- did.data %>% group_by(lubri.date,valence,red.state,post.leak,arrests_any,injuries_crowd_any,injuries_police_any,property_damage_any) %>% summarise(n.protest = n())
+
+
+columns.to.factorize <- c("valence","red.state","post.leak","arrests_any","injuries_crowd_any","injuries_police_any","property_damage_any")
+
+did.data[,columns.to.factorize] <- lapply(did.data[,columns.to.factorize], as.factor)
+
+did.data$log.n.protest <- log(did.data$n.protest)
+
+did.model <- lm(log.n.protest ~ valence+red.state*post.leak+arrests_any+injuries_crowd_any+injuries_police_any+property_damage_any,data=did.data)
+
+summary(did.model)
+```
+$$y= \beta_0 + 
+ \begin{cases}
+      0 & \text{if }V = 0\\
+      \alpha_{v1} & \text{if }V = 1\\
+      \alpha_{v2} & \text{if }V = 2\\
+    \end{cases}  +
+    \begin{cases}
+      0 & \text{if }R = 0\\
+      \alpha_{r} & \text{if }R=1\\
+    \end{cases}+
+    \begin{cases}
+      0 & \text{if }L = 0\\
+      \alpha_{l} & \text{if }L=1\\
+    \end{cases} +
+    \begin{cases}
+      0 & \text{if }A = 0\\
+      \alpha_{a} & \text{if }A=1\\
+    \end{cases} +
+    \begin{cases}
+      0 & \text{if }IC = 0\\
+      \alpha_{ic} & \text{if }IC=1\\
+    \end{cases} +
+    \begin{cases}
+      0 & \text{if }IP = 0\\
+      \alpha_{ip} & \text{if }IP=1\\
+    \end{cases} +
+    \begin{cases}
+      0 & \text{if }P = 0\\
+      \alpha_{p} & \text{if }P=1\\
+    \end{cases} +
+    \begin{cases}
+      0 & \text{if }R = 0 \and L = 0\\
+      \nu_{r\timesl} & \text{if }R=1 \and L = 1\\
+    \end{cases}
+$$
+
+```{r}
+comparison.n.protests.histogram.redstate <- ggplot(data = did.data, aes(x = n.protest))+
+  geom_histogram(color="white",bins=50) +
+  facet_wrap(vars(red.state))+theme_minimal() + labs(title="Red State",x="N. protests",y="Count") +  theme(plot.title = element_text(hjust = 0.5))
+
+ggsave("plots/comparison_n_protests_histogram_redstate.pdf",comparison.n.protests.histogram.redstate)
+
+
+comparison.n.protests.histogram.redstate
+```
+```{r}
+comparison.log.n.protests.histogram.redstate <- ggplot(data = did.data, aes(x = log.n.protest))+
+  geom_histogram(color="white",bins=50) +
+  facet_wrap(vars(red.state))+theme_minimal() + labs(title="Red State",x="log N. protests",y="Count") +  theme(plot.title = element_text(hjust = 0.5))
+
+ggsave("plots/comparison-log-n-protests-histogram-redstate.pdf",comparison.log.n.protests.histogram.redstate)
+
+
+comparison.log.n.protests.histogram.redstate
+```
+```{r}
+comparison.log.n.protests.histogram.leak <- ggplot(data = did.data, mapping = aes(x = log.n.protest)) +
+  geom_histogram(color = "white",bins=50) + 
+  facet_wrap(vars(post.leak))+ theme_minimal() + labs(title="Post leak",x="log N. protests",y="Count") +  theme(plot.title = element_text(hjust = 0.5))
+
+
+ggsave("plots/comparison_log_n_protests_histogram_leak.pdf",comparison.log.n.protests.histogram.leak)
+
+
+comparison.log.n.protests.histogram.leak
+
+```
+
+```{r}
+plot.did.data <- did.data %>% 
+  group_by(red.state, post.leak) %>% 
+  summarize(mean.protests = mean(log.n.protest),
+            se_protets = sd(log.n.protest) / sqrt(n()),
+            upper = mean.protests + (1.96 * se_protets),
+            lower = mean.protests + (-1.96 * se_protets))
+```
+```{r}
+did.plot <- ggplot(plot.did.data, aes(x = post.leak, y = mean.protests, color = red.state)) +
+  geom_pointrange(aes(ymin = lower, ymax = upper), size = 1,alpha=.5) + 
+  # The group = highearn here makes it so the lines go across categories
+  geom_line(aes(group = red.state)) +scale_color_manual(values=c("#5296dd", "#e9141e"),name="State",labels=c("Blue state","Red state"))+ theme_minimal() + labs(x="Leak disclosed",y="Mean of log N. protests") + theme(legend.position="bottom")
+
+
+ggsave("plots/did-plot.pdf",did.plot)
+
+did.plot
+```
+Placebo test
+```{r}
+did.only.pre.data <- did.data %>% filter(post.leak=="no")
+placebo.post.leak.interval <- interval(ymd("2022-01-20"), ymd("2023-05-01"))
+did.only.pre.data <- did.only.pre.data %>% mutate(placebo.post.leak = ifelse(lubri.date %within% placebo.post.leak.interval ,"yes","no"))
+did.only.pre.data$placebo.post.leak <- as.factor(did.only.pre.data$placebo.post.leak)
+placebo.model <- lm(log.n.protest ~ valence+red.state*placebo.post.leak+arrests_any+injuries_crowd_any+injuries_police_any+property_damage_any,data=did.only.pre.data)
+
+
+summary(placebo.model)
+
+```
+
+
+```{r}
+stargazer(did.model,placebo.model)
+```
+
+
+
+
+```{r}
+
+ccc.df %>% filter(year(lubri.date) == 2022 & str_detect(issues,"judiciary")) %>% select(claims,issues)
+```
+
+
+
+

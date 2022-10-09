@@ -1,0 +1,87 @@
+---
+title: "Data Exploration"
+author: "Erich Robbi"
+date: "17/5/2022"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+```
+
+```{r}
+library(tidyverse)
+library(lubridate)
+
+getwd()
+
+```
+
+```{r}
+ccc.df <- read.csv("../crowd-counting-consortium/ccc_compiled.csv")
+ccc.df <- as_tibble(ccc.df)
+```
+
+```{r}
+attach(ccc.df)
+#remove source columns
+ccc.df <- ccc.df %>% select(-c(33:62))
+#remove online events
+ccc.df <- ccc.df %>% filter(online == 0)
+
+ccc.df <- ccc.df %>% filter(!is.na(date)) %>% mutate(lubri.date = ymd(date))
+#Protests between jan 2022, july 2022 in Austin / Dallas or San Francisco / Los Angeles
+ccc.df <- ccc.df %>% filter((month(lubri.date) >= 5 & year(lubri.date) >= 2021 |  (month(lubri.date) <= 7 & year(lubri.date) >= 2022)) )
+```
+
+```{r}
+protests.df <- ccc.df %>% group_by(lubri.date) %>% summarise(protests=n())
+
+protests.df <- protests.df %>% mutate(pre.leak = ifelse(month(lubri.date) < 5,"NO","YES"))
+ggplot(protests.df,aes(x=protests,color=pre.leak)) + geom_histogram(aes(y=..density..))
+
+ks.test((protests.df %>% filter(pre.leak == "NO"))$protests,(protests.df %>% filter(pre.leak == "YES"))$protests,alternative = "l")
+```
+
+
+```{r}
+s <- paste((ccc.df %>% filter(month(lubri.date) >= 4 & year(lubri.date) >= 2022 ))$issues,sep = "; ",collapse = "; ")
+s <- str_split(s,"; ")
+s <- s[[1]]
+s <- as_tibble(s)
+
+prova321 <- s %>%  group_by(value) %>% summarise(n = n())
+
+prova321 <- arrange(prova321,n)
+
+prova321$value <- factor(prova321$value, levels = prova321$value)
+
+ggplot(aes(x=value,y=n),data=prova321) + geom_bar(stat="identity")+coord_flip()
+```
+
+```{r}
+protests.df <- protests.df %>% mutate(log.protests = log(protests))
+mean.tmp <- mean(((protests.df %>% filter(pre.leak == "YES"))$log.protests))
+sd.tmp <- sd(((protests.df %>% filter(pre.leak == "YES"))$log.protests))
+#xvals <- seq(0,5,0.1)
+#yvals <- dnorm(xvals,mean.tmp,sd.tmp)
+ks.test(((protests.df %>% filter(pre.leak == "YES"))$log.protests),"pnorm",mean.tmp,sd.tmp)
+hist(((protests.df %>% filter(pre.leak == "NO"))$log.protests))
+#lines(xvals,yvals)
+x <- boxplot((protests.df %>% filter(pre.leak == "YES"))$log.protests)
+outliers <- x$out
+protests.df <- protests.df[-which((protests.df %>% filter(pre.leak == "YES"))$log.protests %in% outliers),]
+length(outliers)
+t.test(((protests.df %>% filter(pre.leak == "NO"))$log.protests),((protests.df %>% filter(pre.leak == "YES"))$log.protests))
+```
+
+```{r}
+qqnorm(((protests.df %>% filter(pre.leak == "YES"))$log.protests))
+```
+
+```{r}
+
+ggplot(protests.df,aes(x=lubri.date,y=protests)) + geom_line()
+```
+
